@@ -1,146 +1,125 @@
-# 中文指令 LoRA 微调与评测（低显存版）
+# Post-Training: Qwen 中文指令 LoRA 微调与评测
 
-面向 **RTX 3060 Laptop 4GB** 的本机可跑 **项目一：后训练 / SFT**，与 `RAG 应用算法` 项目配套。实验室 **4090** 只需改 `config.yaml` 中 `active_profile: lab`。
+基于 Qwen2.5 系列模型，使用 COIG-CQIA 中文指令数据集进行 LoRA/QLoRA 监督微调（SFT），并通过 C-Eval 客观评测与 Hold-out 主观评测量化微调效果，同时完成数据规模消融实验。
 
-## 功能
+## 技术栈
 
-| 实验 | 说明 |
-|------|------|
-| **E0** | 仅评测 base 模型（对照） |
-| **E1** | LoRA，较小数据量（local: 200 条） |
-| **E2** | LoRA，较大数据量（local: 1k 条） |
+- **基座模型**: Qwen2.5-0.5B / 1.5B / 7B-Instruct
+- **微调方法**: LoRA / QLoRA (PEFT + bitsandbytes)
+- **训练框架**: HuggingFace Transformers + TRL SFTTrainer
+- **训练数据**: [BAAI/COIG-CQIA](https://huggingface.co/datasets/BAAI/COIG-CQIA)（7 个子集：zhihu, wiki, exam, xhs, douban, wikihow, coig_pc）
+- **客观评测**: C-Eval（5 科：计算机网络、操作系统、离散数学、概率统计、大学化学）
+- **主观评测**: Hold-out 集 Win-rate（Base vs LoRA）
 
-- 训练数据：[BAAI/COIG-CQIA](https://huggingface.co/datasets/BAAI/COIG-CQIA)（自动下载 + 去重清洗）
-- 客观评测：C-Eval 子集（5 科 × N 题）
-- 主观评测：Hold-out 集 base vs LoRA win-rate
+## 实验设计
 
-## 环境准备
+| 实验ID | 说明 |
+|--------|------|
+| E0 | Base 模型直接评测（对照基线） |
+| E1 | LoRA SFT，小数据量（200 条） |
+| E2 | LoRA SFT，中数据量（1K 条） |
+| E3 | LoRA SFT，大数据量（5K / 10K 条，需 4090） |
 
-```powershell
-cd "C:\Users\hasee\Desktop\Cursor\后训练算法"
+核心消融维度：**训练数据规模对微调效果的影响**。
+
+## 关键实现
+
+- **4bit QLoRA 训练**: NF4 量化 + 双量化 + 梯度检查点，单卡 RTX 3060 (4GB) 即可训练 1.5B 模型
+- **数据清洗管线**: 自动下载 COIG-CQIA → 多字段兼容抽取（instruction/output, input/response, conversation 等格式）→ 去重 → 长度过滤 → 随机打乱 → JSONL 缓存
+- **双维度评测**: C-Eval 多选题准确率（客观）+ Hold-out 集 Win-rate（主观），避免单一指标偏差
+- **Profile 配置系统**: `config.yaml` 支持 local/lab 双 profile 切换，无需改代码即可适配不同硬件
+
+## 项目结构
+
+```
+post-training/
+├── config.yaml              # 双 profile 配置（local 4GB / lab 4090）
+├── requirements.txt
+├── scripts/
+│   ├── prepare_data.py      # 数据下载、清洗、划分
+│   ├── train_lora.py        # LoRA 微调训练
+│   ├── evaluate_ceval.py    # C-Eval 客观评测
+│   ├── evaluate_holdout.py  # Hold-out 主观评测
+│   ├── run_ablation.py      # 消融实验一键运行
+│   ├── run_overnight.py     # 实验室长时间训练脚本
+│   ├── run_recover.py       # 断点续训
+│   ├── smoke_test.py        # 快速冒烟测试
+│   └── preflight_check.py   # 训练前环境检查
+├── src/
+│   ├── model_utils.py       # 模型加载 / LoRA 构建 / 推理生成
+│   ├── data_utils.py        # COIG-CQIA 数据加载与清洗
+│   ├── config.py            # Profile 配置解析
+│   ├── adapter_utils.py     # Adapter 路径管理
+│   └── eval_ceval.py        # C-Eval 评测核心逻辑
+├── data/                    # 自动生成（已 gitignore）
+├── outputs/                 # LoRA Adapter 输出（已 gitignore）
+└── results/                 # 评测结果 CSV（已 gitignore）
+```
+
+## 快速开始
+
+### 环境准备
+
+```bash
 python -m venv .venv
-.\.venv\Scripts\Activate.ps1
-pip install -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
-$env:HF_ENDPOINT = "https://hf-mirror.com"
+source .venv/bin/activate  # Windows: .\.venv\Scripts\Activate.ps1
+pip install -r requirements.txt
+
+# 国内用户建议设置 HuggingFace 镜像
+export HF_ENDPOINT=https://hf-mirror.com
 ```
 
-需 **CUDA 版 PyTorch**（与项目二相同环境可复用）。
+需要 CUDA 版 PyTorch。
 
-### bitsandbytes 失败时
+### 冒烟测试（推荐首次运行）
 
-编辑 `config.yaml` → `profiles.local.model`：
-
-```yaml
-name: "Qwen/Qwen2.5-0.5B-Instruct"
-use_4bit: false
+```bash
+python scripts/smoke_test.py
 ```
 
-## 快速运行
+流程：准备 200 条数据 → 训练 30 step → C-Eval + Hold-out 评测（5 条）。
 
-### 1）一键冒烟（推荐首次）
+### 分步运行
 
-```powershell
-python scripts\smoke_test.py
-# 或双击 run_smoke.bat
+```bash
+# 1. 准备数据
+python scripts/prepare_data.py --train_size 200 --holdout_size 20
+
+# 2. 训练 LoRA
+python scripts/train_lora.py --train_size 200 --exp_id E1
+
+# 3. 评测 Base 模型
+python scripts/evaluate_ceval.py --mode base --exp_id E0
+
+# 4. 评测 LoRA 模型
+python scripts/evaluate_ceval.py --mode lora --adapter outputs/E1_size200_lr2e-4/adapter --exp_id E1
+python scripts/evaluate_holdout.py --adapter outputs/E1_size200_lr2e-4/adapter --exp_id E1
 ```
 
-流程：准备 200 条数据 → 训练 30 step → C-Eval + Hold-out（5 条）。
+### 完整消融实验
 
-### 2）分步运行
-
-```powershell
-# 准备数据（local 默认最大 1000 + holdout 50）
-python scripts\prepare_data.py --train_size 200 --holdout_size 20
-
-# 训练（本机建议先 200 条）
-python scripts\train_lora.py --train_size 200 --exp_id E1
-
-# 评测 base
-python scripts\evaluate_ceval.py --mode base --exp_id E0
-
-# 评测 LoRA（路径按实际 outputs 目录修改）
-python scripts\evaluate_ceval.py --mode lora --adapter outputs\E1_size200_lr2e-4\adapter --exp_id E1
-
-python scripts\evaluate_holdout.py --adapter outputs\E1_size200_lr2e-4\adapter --exp_id E1
-```
-
-### 3）本机完整消融
-
-```powershell
-python scripts\run_ablation.py --steps prepare,train,eval
+```bash
+python scripts/run_ablation.py --steps prepare,train,eval
 ```
 
 结果汇总：`results/ablation_summary.csv`
 
-## 目录结构
+## 硬件适配
 
-```text
-后训练算法/
-├── config.yaml              # local / lab 两套 profile
-├── scripts/
-│   ├── prepare_data.py
-│   ├── train_lora.py
-│   ├── evaluate_ceval.py
-│   ├── evaluate_holdout.py
-│   ├── run_ablation.py
-│   └── smoke_test.py
-├── src/
-├── data/                    # 自动生成
-├── outputs/                 # LoRA adapter
-└── results/                 # 评测 csv
-```
-
-## 本机 vs 实验室配置
-
-| 项 | local（4GB） | lab（4090） |
-|----|--------------|-------------|
-| 切换方式 | `active_profile: local` | `active_profile: lab` |
-| 模型 | Qwen2.5-**1.5B** 4bit | Qwen2.5-**7B** 4bit |
-| 训练量 | 200 / 1k | 1k / 5k / 10k |
-| C-Eval | 5×10=50 题 | 5×20=100 题 |
+| 配置项 | Local (RTX 3060 4GB) | Lab (RTX 4090 24GB) |
+|--------|----------------------|---------------------|
+| Profile | `active_profile: local` | `active_profile: lab` |
+| 基座模型 | Qwen2.5-1.5B 4bit | Qwen2.5-7B 4bit |
+| LoRA rank | 8 | 16 |
+| Target modules | q/k/v/o_proj | q/k/v/o/gate/up/down_proj |
+| 训练数据量 | 200 / 1K | 1K / 5K / 10K |
 | max_seq_length | 1024 | 2048 |
 
-实验室步骤：
+切换方式：修改 `config.yaml` 中 `active_profile` 即可，代码无需改动。
 
-```powershell
-# 1. 改 config.yaml: active_profile: lab
-# 2. 同样命令跑 ablation
-python scripts\run_ablation.py --steps prepare,train,eval
-```
+## 4GB 显存优化策略
 
-RAG 项目（`RAG 应用算法`）同步改 `active_profile` 或手动把 `llm` 改为 7B 即可。
-
-## 显存建议（4GB）
-
-1. 关闭占用 GPU 的其他程序  
-2. 仅用 **1.5B + QLoRA**，不要在本机试 7B  
-3. `per_device_train_batch_size=1`，靠 gradient_accumulation  
-4. 首次用 `--max_steps 30` 冒烟再跑完整 epoch  
-
-## 简历指标（跑完后填入）
-
-- 基于 Qwen2.5 + COIG-CQIA **N 条** LoRA SFT  
-- C-Eval 子集准确率：base **x%** → LoRA **y%**（+z pt）  
-- Hold-out win-rate **w%**  
-- 数据规模消融（200 vs 1k）  
-
-## 常见问题
-
-**Q: COIG-CQIA 下载慢**  
-设 `HF_ENDPOINT=https://hf-mirror.com`，第二次会用 `data/coig_cqia_clean.json` 缓存。
-
-**Q: CUDA OOM**  
-减小 `train_size`；`max_seq_length` 改为 512；用 0.5B 模型。
-
-**Q: trl 版本报错 `processing_class`**  
-`pip install trl>=0.9.6`；若仍失败可降级到 0.8 并把 `processing_class` 改为 `tokenizer`。
-
-**Q: adapter 路径找不到**  
-查看 `outputs/` 下文件夹名（含 `lr2e-4`），与命令中 `--adapter` 保持一致。
-
-## 与项目二联调（实验室）
-
-1. 本机两项目均 `smoke_test` 通过  
-2. 实验室：`config.yaml` 均切到 **lab / 7B**  
-3. 先跑完 **后训练 ablation**，再跑 **RAG evaluate**（可并行占不同 GPU）  
-4. 汇总 `results/ablation_summary.csv` 与 `RAG/results/metrics_summary.csv` 写简历  
+1. QLoRA 4bit 量化 + 梯度检查点，1.5B 模型仅占约 2GB 显存
+2. `per_device_train_batch_size=1` + `gradient_accumulation_steps=16` 等效 batch=16
+3. 嵌入模型在 CPU 运行，不占用 GPU 显存
+4. 0.5B 模型作为 bitsandbytes 兼容性备选

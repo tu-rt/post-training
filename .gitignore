@@ -28,5 +28,8 @@ Thumbs.db
 .idea/
 .vscode/
 
+# 异常汇总文件（内部文档，不上传）
+*异常汇总*
+
 # HuggingFace 缓存
 .huggingface/
