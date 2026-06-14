@@ -1,0 +1,99 @@
+# =============================================================================
+# 本机 4GB 显存（RTX 3060 Laptop）— 默认 profile: local
+# 实验室 4090 — 将 active_profile 改为 lab，并调大数据量
+# =============================================================================
+active_profile: lab   # local | lab
+
+profiles:
+  local:
+    model:
+      name: "Qwen/Qwen2.5-1.5B-Instruct"
+      fallback: "Qwen/Qwen2.5-0.5B-Instruct"
+      use_4bit: true
+      use_4bit_fallback: false
+      max_seq_length: 1024
+    lora:
+      r: 8
+      alpha: 16
+      dropout: 0.05
+      target_modules: ["q_proj", "k_proj", "v_proj", "o_proj"]
+    train:
+      num_train_epochs: 1
+      per_device_train_batch_size: 1
+      gradient_accumulation_steps: 16
+      learning_rate: 2.0e-4
+      warmup_ratio: 0.03
+      logging_steps: 5
+      save_steps: 100
+      max_steps: -1          # 冒烟可设 30；正式 -1 用 epoch
+      gradient_checkpointing: true
+      max_grad_norm: 1.0
+    data:
+      train_sizes: [200, 1000]   # 本机消融：200 / 1k
+      holdout_size: 50
+      ceval_per_subject: 10      # 5 科 × 10 题 = 50 题（快）
+  lab:
+    model:
+      name: "/home/huiwei/BGHModel/trtModel/post-training/models/Qwen2.5-7B"
+      fallback: "Qwen/Qwen2.5-1.5B-Instruct"
+      use_4bit: true
+      use_4bit_fallback: true
+      max_seq_length: 2048
+    lora:
+      r: 16
+      alpha: 32
+      dropout: 0.05
+      target_modules: ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]
+    train:
+      num_train_epochs: 2
+      # 大数据量单独减 epoch，避免过拟合导致生成 nan（问题 #14）
+      epochs_by_size:
+        5000: 1
+        10000: 1
+      per_device_train_batch_size: 2
+      gradient_accumulation_steps: 8
+      learning_rate: 2.0e-4
+      warmup_ratio: 0.03
+      logging_steps: 10
+      save_steps: 200
+      max_steps: -1
+      gradient_checkpointing: true
+      max_grad_norm: 1.0
+    data:
+      train_sizes: [1000, 5000, 10000]
+      holdout_size: 100
+      ceval_per_subject: 20
+
+project:
+  name: "Qwen 中文指令 LoRA 微调与评测"
+  data_dir: "data"
+  output_dir: "outputs"
+  results_dir: "results"
+
+dataset:
+  # 主训练集
+  sft_source: "m-a-p/COIG-CQIA"
+  # 可选子集：chinese_traditional, coig_pc, exam, finance, douban,
+  #   human_value, logi_qa, ruozhiba, segmentfault, wiki, wikihow, xhs, zhihu
+  # null = 全部加载（13个子集）
+  # 如只需部分，可写为列表如: ["zhihu", "wiki", "exam", "xhs", "douban"]
+  sft_subset: ["zhihu", "wiki", "exam", "xhs", "douban", "wikihow", "coig_pc"]
+  seed: 42
+  min_chars: 10
+  max_chars: 4000
+
+ceval:
+  name: "ceval/ceval-exam"
+  subjects:
+    - computer_network
+    - operating_system
+    - discrete_mathematics
+    - probability_and_statistics
+    - college_chemistry
+
+experiments:
+  # E0=base 对照；E1/E2/E3 对应 train_sizes 各档（仅文档说明，脚本读 train_sizes）
+  run_ids: ["E0", "E1", "E2", "E3"]
+
+huggingface:
+  cache_dir: null

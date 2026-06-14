@@ -1,0 +1,32 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+venv/
+env/
+
+# 模型权重（大文件，不走 Git）
+models/
+*.bin
+*.safetensors
+*.ckpt
+*.pt
+*.pth
+
+# 数据文件
+data/
+
+# 训练输出和结果
+outputs/
+results/
+*.csv
+
+# 系统和 IDE
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+
+# HuggingFace 缓存
+.huggingface/
