@@ -1,59 +1,71 @@
 # Post-Training: Qwen 中文指令 LoRA 微调与评测
 
-基于 Qwen2.5 系列模型，使用 COIG-CQIA 中文指令数据集进行 LoRA/QLoRA 监督微调（SFT），并通过 C-Eval 客观评测与 Hold-out 主观评测量化微调效果，同时完成数据规模消融实验。
+本项目基于 Qwen2.5 系列模型，使用 COIG-CQIA 中文指令数据进行 LoRA/QLoRA 监督微调（SFT），并通过 C-Eval 客观评测与 Hold-out 自动对比评测量化微调效果。项目重点关注小规模中文指令数据在不同训练规模下的微调收益与稳定性。
+
+## 实验结果速览
+
+| 实验 | 训练数据量 | C-Eval 准确率 | Hold-out win-rate | 说明 |
+|------|------------|---------------|-------------------|------|
+| E0 | 0 | 20% | - | Base 模型直接评测 |
+| E2 | 1,000 | 24% | 55% | 当前最优性价比配置 |
+| E3 | 5,000 | 指标下降 | 可用但收益不稳定 | 出现过拟合/泛化下降迹象 |
+| E4 | 10,000 | 模式崩溃 | 不稳定 | 当前超参下不适合作为最终配置 |
+
+> 注：Hold-out win-rate 为自动对比指标，基于模型输出与参考答案的 overlap_score 计算，用于辅助比较 Base 与 LoRA，不等同于人工主观评分。
 
 ## 技术栈
 
 - **基座模型**: Qwen2.5-0.5B / 1.5B / 7B-Instruct
-- **微调方法**: LoRA / QLoRA (PEFT + bitsandbytes)
+- **微调方法**: LoRA / QLoRA（PEFT + bitsandbytes）
 - **训练框架**: HuggingFace Transformers + TRL SFTTrainer
-- **训练数据**: [BAAI/COIG-CQIA](https://huggingface.co/datasets/BAAI/COIG-CQIA)（7 个子集：zhihu, wiki, exam, xhs, douban, wikihow, coig_pc）
-- **客观评测**: C-Eval（5 科：计算机网络、操作系统、离散数学、概率统计、大学化学）
-- **主观评测**: Hold-out 集 Win-rate（Base vs LoRA）
+- **训练数据**: [m-a-p/COIG-CQIA](https://huggingface.co/datasets/m-a-p/COIG-CQIA)
+- **客观评测**: C-Eval（计算机网络、操作系统、离散数学、概率统计、大学化学）
+- **自动对比评测**: Hold-out 集 Base vs LoRA win-rate
 
 ## 实验设计
 
 | 实验ID | 说明 |
 |--------|------|
-| E0 | Base 模型直接评测（对照基线） |
-| E1 | LoRA SFT，小数据量（200 条） |
-| E2 | LoRA SFT，中数据量（1K 条） |
-| E3 | LoRA SFT，大数据量（5K / 10K 条，需 4090） |
+| E0 | Base 模型直接评测 |
+| E1 | LoRA SFT，小数据量（local: 200 条） |
+| E2 | LoRA SFT，中数据量（lab: 1K 条） |
+| E3 | LoRA SFT，大数据量（lab: 5K / 10K 条） |
 
-核心消融维度：**训练数据规模对微调效果的影响**。
+核心消融维度：**训练数据规模对 QLoRA 指令微调效果的影响**。
 
 ## 关键实现
 
-- **4bit QLoRA 训练**: NF4 量化 + 双量化 + 梯度检查点，单卡 RTX 3060 (4GB) 即可训练 1.5B 模型
-- **数据清洗管线**: 自动下载 COIG-CQIA → 多字段兼容抽取（instruction/output, input/response, conversation 等格式）→ 去重 → 长度过滤 → 随机打乱 → JSONL 缓存
-- **双维度评测**: C-Eval 多选题准确率（客观）+ Hold-out 集 Win-rate（主观），避免单一指标偏差
-- **Profile 配置系统**: `config.yaml` 支持 local/lab 双 profile 切换，无需改代码即可适配不同硬件
+- **4bit QLoRA 训练**: NF4 量化 + 双量化 + 梯度检查点；本机 4GB 显存可训练 1.5B，实验室 4090 可训练 7B
+- **单卡训练约束**: 训练脚本默认限制 `CUDA_VISIBLE_DEVICES=0`，避免 7B QLoRA 在 `device_map="auto"` 多卡分片时出现跨设备 loss 问题
+- **数据清洗管线**: 自动下载 COIG-CQIA → 多字段兼容抽取 → 去重 → 长度过滤 → 随机打乱 → JSONL 缓存
+- **双轨评测**: C-Eval 多选题准确率 + Hold-out 自动对比 win-rate，避免只看单一指标
+- **Profile 配置系统**: `config.yaml` 支持 `local/lab` 双 profile，便于在本机与实验室服务器之间切换
 
 ## 项目结构
 
-```
+```text
 post-training/
-├── config.yaml              # 双 profile 配置（local 4GB / lab 4090）
+├── config.yaml              # local/lab 双 profile 配置
 ├── requirements.txt
 ├── scripts/
 │   ├── prepare_data.py      # 数据下载、清洗、划分
-│   ├── train_lora.py        # LoRA 微调训练
+│   ├── train_lora.py        # LoRA / QLoRA 微调
 │   ├── evaluate_ceval.py    # C-Eval 客观评测
-│   ├── evaluate_holdout.py  # Hold-out 主观评测
+│   ├── evaluate_holdout.py  # Hold-out 自动对比评测
 │   ├── run_ablation.py      # 消融实验一键运行
-│   ├── run_overnight.py     # 实验室长时间训练脚本
-│   ├── run_recover.py       # 断点续训
 │   ├── smoke_test.py        # 快速冒烟测试
+│   ├── run_overnight.py     # 实验室长时间训练脚本
+│   ├── run_recover.py       # 断点续训/恢复
 │   └── preflight_check.py   # 训练前环境检查
 ├── src/
-│   ├── model_utils.py       # 模型加载 / LoRA 构建 / 推理生成
-│   ├── data_utils.py        # COIG-CQIA 数据加载与清洗
-│   ├── config.py            # Profile 配置解析
-│   ├── adapter_utils.py     # Adapter 路径管理
-│   └── eval_ceval.py        # C-Eval 评测核心逻辑
-├── data/                    # 自动生成（已 gitignore）
-├── outputs/                 # LoRA Adapter 输出（已 gitignore）
-└── results/                 # 评测结果 CSV（已 gitignore）
+│   ├── model_utils.py
+│   ├── data_utils.py
+│   ├── config.py
+│   ├── adapter_utils.py
+│   └── eval_ceval.py
+├── data/                    # 自动生成，已 gitignore
+├── outputs/                 # LoRA Adapter，已 gitignore
+└── results/                 # 评测结果，已 gitignore
 ```
 
 ## 快速开始
@@ -71,13 +83,13 @@ export HF_ENDPOINT=https://hf-mirror.com
 
 需要 CUDA 版 PyTorch。
 
-### 冒烟测试（推荐首次运行）
+### 冒烟测试
 
 ```bash
 python scripts/smoke_test.py
 ```
 
-流程：准备 200 条数据 → 训练 30 step → C-Eval + Hold-out 评测（5 条）。
+流程：准备 200 条数据 → 训练 30 step → C-Eval + Hold-out 小样本评测。
 
 ### 分步运行
 
@@ -88,10 +100,10 @@ python scripts/prepare_data.py --train_size 200 --holdout_size 20
 # 2. 训练 LoRA
 python scripts/train_lora.py --train_size 200 --exp_id E1
 
-# 3. 评测 Base 模型
+# 3. 评测 Base
 python scripts/evaluate_ceval.py --mode base --exp_id E0
 
-# 4. 评测 LoRA 模型
+# 4. 评测 LoRA
 python scripts/evaluate_ceval.py --mode lora --adapter outputs/E1_size200_lr2e-4/adapter --exp_id E1
 python scripts/evaluate_holdout.py --adapter outputs/E1_size200_lr2e-4/adapter --exp_id E1
 ```
@@ -102,7 +114,7 @@ python scripts/evaluate_holdout.py --adapter outputs/E1_size200_lr2e-4/adapter -
 python scripts/run_ablation.py --steps prepare,train,eval
 ```
 
-结果汇总：`results/ablation_summary.csv`
+结果汇总输出到 `results/ablation_summary.csv`。
 
 ## 硬件适配
 
@@ -115,11 +127,19 @@ python scripts/run_ablation.py --steps prepare,train,eval
 | 训练数据量 | 200 / 1K | 1K / 5K / 10K |
 | max_seq_length | 1024 | 2048 |
 
-切换方式：修改 `config.yaml` 中 `active_profile` 即可，代码无需改动。
+公开仓库建议默认使用 `active_profile: local`。如果在实验室服务器复现实验，需要将 `lab.model.name` 改成本地模型路径或 HuggingFace 模型 ID。
 
-## 4GB 显存优化策略
+## 评测指标说明
 
-1. QLoRA 4bit 量化 + 梯度检查点，1.5B 模型仅占约 2GB 显存
-2. `per_device_train_batch_size=1` + `gradient_accumulation_steps=16` 等效 batch=16
-3. 嵌入模型在 CPU 运行，不占用 GPU 显存
-4. 0.5B 模型作为 bitsandbytes 兼容性备选
+- **C-Eval accuracy**：模型对单选题选项 A/B/C/D 的准确率。
+- **Hold-out score**：基于模型输出与参考答案的字符级 overlap_score。
+- **Hold-out win-rate**：LoRA 的 overlap_score 高于 Base 的样本比例。
+
+该 Hold-out 评测是轻量自动评测，主要用于比较不同微调配置的相对变化，不等同于人工偏好评测或 LLM-as-judge。
+
+## 主要结论
+
+- 小规模高质量中文指令数据对 Qwen2.5-7B 的部分任务表现有提升。
+- 1K 数据配置在当前实验中取得最佳性价比：C-Eval +4pt，Hold-out win-rate 55%。
+- 5K / 10K 数据在当前学习率和 epoch 配置下未持续提升，提示 SFT 并非简单增加数据量即可变好。
+- 后续可继续从数据质量筛选、学习率缩放、epoch 调整和偏好优化（DPO）方向改进。

@@ -2,7 +2,7 @@
 # 本机 4GB 显存（RTX 3060 Laptop）— 默认 profile: local
 # 实验室 4090 — 将 active_profile 改为 lab，并调大数据量
 # =============================================================================
-active_profile: lab   # local | lab
+active_profile: local   # local | lab
 
 profiles:
   local:
@@ -34,7 +34,7 @@ profiles:
       ceval_per_subject: 10      # 5 科 × 10 题 = 50 题（快）
   lab:
     model:
-      name: "/home/huiwei/BGHModel/trtModel/post-training/models/Qwen2.5-7B"
+      name: "Qwen/Qwen2.5-7B-Instruct"  # 如使用本地模型，可改为服务器绝对路径
       fallback: "Qwen/Qwen2.5-1.5B-Instruct"
       use_4bit: true
       use_4bit_fallback: true
